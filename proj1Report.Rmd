@@ -1,0 +1,318 @@
+---
+title: "Qualitative Activity Recognition/Prediction Using Machine Learning Models"
+author: "parafac"
+date: "Wednesday, March 10, 2015"
+output: html_document
+---
+
+## Executive Summary
+
+In this study, our goal is to use data from accelerometers to classify 
+and predict the quality of activities performed.
+we build four basic machine learning models including
+recursive partitioning decision tree model (rpart), 
+random forest model (rf), gradient boosted model (gbm), and
+Linear Discriminant Analysis model (lda). The 
+random forest model and the gradient boosting model give 
+the best accuracy on the validation data
+set, they also give the same predictions when applied to 
+the testing data set. Future work may include cross validation
+and pre-processing with principal component analysis (PCA).
+
+
+## Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible 
+to collect a large amount of data about personal activity relatively inexpensively.
+These type of devices are part of the quantified self movement - a group of
+enthusiasts who take measurements about themselves regularly to improve their 
+health, to find patterns in their behavior, or because they are tech geeks. 
+One thing that people regularly do is quantify how much of a particular activity
+they do. And human activity recognition research has traditionally focused on discriminating between different activities, i.e. to predict "which" activity was performed at a specific point in time, but they rarely quantify how well they do it [2].
+
+
+In this study, our goal is to use data from accelerometers to classify and 
+predict the quality of activities performed. We perform exploratory data 
+analysis, experiment with several machine learning algorithms, and derive 
+conclusion from our analysis.
+
+
+## Data Source and Description
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har [1] [2].
+
+The data were collected from accelerometers of 6 young male health participants,
+aged between 20-28 years, with little weight lifting experience.
+They were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in 5 different fashions: exactly according to the specification 
+(Class A), throwing the elbows to the front (Class B), lifting the dumbbell 
+only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing
+the hips to the front (Class E). Class A corresponds to the specified execution 
+of the exercise, while the other 4 classes correspond to common mistakes. [2] 
+
+The training data for this project are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The R code for downloading the data
+
+
+## Software and Required Library
+
+We use R version 3.1.1 and RStudio 0.98 on a 64-bit Windows 7 
+computer. The R packages that is required for the study include
+
+```{r message=FALSE}
+library(caret)
+library(rpart.plot)
+library(rattle)
+```
+
+## Data Cleaning and Exploratory Data Analysis
+
+The most difficult part of this study is data cleaning, that is,
+choosing the right set of variables for performing machine learning
+algorithms and predictions.
+The training data and the testing data are in nice csv format. 
+They can be read in with the read.csv() function with little effort.
+
+```{r}
+trainingData <- read.csv("./pml-training.csv", header=TRUE, sep=",", na.string=c("", " ", "NA", "#DIV/0!"))
+testingData  <- read.csv("./pml-testing.csv", header=TRUE, sep=",", na.string=c("", " ", "NA", "#DIV/0!"))
+```
+
+There are 160 fields(columns) and 19622 records in the training
+data set. Not every variable is useful in predicting the quality
+of the activities, besides there are many missing values in the data.
+The process outlined here is the result of many trials. The may
+not be the best choice of variables, better alternative is possible
+if more time or better guideline is available. Pre-processing
+techniques such as the principal component analysis (PCA) may be
+useful, too.
+
+First, we use the nearZeroVar() function to diagonse predictors that
+may have one or very few unique values (near zero variance).
+
+```{r}
+nsv <- nearZeroVar(trainingData, saveMetric=TRUE)
+sum(nsv$nzv)
+```
+
+We manually inspect the output from nearZeroVar(), there are 36 
+near zero variance columns. We remove those
+predictors and a few other related predictors.
+The same process is also applied to the testing data set.
+
+```{r}
+trainingSet <- trainingData[,!nsv$nzv]
+testingSet  <- testingData[,!nsv$nzv]
+
+jcols <- grep("amplitude_|avg_|kurtosi_|ls_|max_|min_|skewness_|stddev_|var_", names(trainingSet))
+
+trainingSet <- trainingSet[,-jcols]
+testingSet  <- testingSet[,-jcols]
+
+dim(trainingSet)
+dim(testingSet)
+```
+
+There are 68 predictors remain after this process. 
+
+Since there are many missing values in the data, we decide to 
+keep only those columns that have less than 20% of missing values,
+that is, columns with 80% qualified entries. We also remove the
+first column because it only represents the row index which is
+not useful in prediction.
+The same process is also applied to the testing data set.
+Furtherrmore, the classe variable (outcome  variable) in the 
+training set is converted into factor variable.
+
+We make sure the training data set and the testing data set have
+the same varialbes except the last column which is the quality
+of activities we are going to predict.
+
+```{r}
+colIdx <- which(colSums(is.na(trainingSet))/nrow(trainingSet) <= 0.20)
+trainingSet <- trainingSet[, colIdx]
+testingSet  <- testingSet[, colIdx]
+
+trainingSet <- trainingSet[,-1]
+testingSet  <- testingSet[,-1]
+
+trainingSet$classe <- as.factor(trainingSet$classe)
+
+dim(trainingSet)
+dim(testingSet)
+sum(names(trainingSet) != names(testingSet))
+```
+
+At the end of data cleaning and selection, we keep 58 columns
+(57 predictors and one outcome variable).
+
+We plot the pairwise relationships between predictors
+"total_accel_belt", "total_accel_arm", "total_accel_dumbbell", and
+"total_accel_forearm" using featurePlot() function.
+
+```{r}
+featurePlot(x=trainingSet[,c("total_accel_belt", "total_accel_arm", "total_accel_dumbbell","total_accel_forearm")], 
+            y=trainingSet$classe, plot="pairs")
+```
+
+It's hard to make conclusion from these plots.
+
+
+## Data Preparation and Splitting
+
+We split the training data set into two parts: 60% for building
+the models (input into machine learning algorithms), \
+and 40% for testing the accuracy of the prediction models. 
+
+```{r message=FALSE}
+set.seed(3245)
+inTrain <- createDataPartition(trainingSet$classe, p = 0.6)[[1]]
+myTraining <- trainingSet[inTrain,]
+myTesting  <- trainingSet[-inTrain,]
+```
+
+
+## Machine Learning Models
+
+#### Recursive Partitioning Model (rpart)
+
+We first the decision tree model using recursive partitioning 
+algorithm. The decision tree model is usually easy to
+interprete the results.
+
+```{r}
+modelFit_rpart <- train(classe ~ ., data=myTraining, method="rpart")
+pred_rpart <- predict(modelFit_rpart, newdata=myTesting)
+accuracy_rpart <- sum(myTesting$classe == pred_rpart)/length(myTesting$classe)
+print(accuracy_rpart)
+fancyRpartPlot(modelFit_rpart$finalModel)
+```
+Unfortunately, we only get 56% of accuracy when applied the model
+to the validation set. The poor result may be related to the 
+predictor selection. 
+
+
+
+#### Random Forest Model (rf)
+
+Then we build a random forest model and test the prediction accuracy.
+It takes a very long time to build the model on a laptop with
+Core i5 CPU and 8GB of memory.
+
+```{r}
+modelFit_rf <- train(classe ~ ., data=myTraining, method="rf")
+pred_rf <- predict(modelFit_rf, newdata=myTesting)
+accuracy_rf <- sum(myTesting$classe == pred_rf)/length(myTesting$classe)
+print(accuracy_rf)
+```
+
+#### Gradient Boosted Model (gbm)
+
+Then we build a gradient boosted model. It also takes 
+a long time to train this model.
+
+```{r}
+modelFit_gbm <- train(classe ~ ., data=myTraining, method="gbm", verbose=FALSE)
+pred_gbm <- predict(modelFit_gbm, newdata=myTesting)
+accuracy_gbm <- sum(myTesting$classe == pred_gbm)/length(myTesting$classe)
+print(accuracy_gbm)
+```
+
+#### Linear Discriminant Analysis (lda)
+
+Finally we build the linear discriminant analysis model (lda).
+
+```{r}
+modelFit_lda <- train(classe ~ ., data=myTraining, method="lda")
+pred_lda <- predict(modelFit_lda, newdata=myTesting)
+accuracy_lda <- sum(myTesting$classe == pred_lda)/length(myTesting$classe)
+print(accuracy_lda)
+```
+ 
+
+## Prediction Results
+
+
+After we train the models, we apply these models to the testing
+data. 
+
+```{r}
+prediction_rpart <- predict(modelFit_rpart, newdata=testingSet)
+print(prediction_rpart)
+
+prediction_rf <- predict(modelFit_rf, newdata=testingSet)
+print(prediction_rf)
+
+prediction_gbm <- predict(modelFit_gbm, newdata=testingSet)
+print(prediction_gbm)
+
+prediction_lda <- predict(modelFit_lda, newdata=testingSet)
+print(prediction_lda)
+```
+
+From the accuracy results in the previous section, the rf model
+and the gbm model have the highest precision when applied to 
+the validation set (myTesting). In fact, both models give the
+same predictions to the testing data. We write the results from
+gbm model to external files.
+
+```{r}
+write_prediction = function(x){
+    n = length(x)
+    for(i in 1:n){
+        filename = paste0("problem_id_",i,".txt")
+        write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+    }
+}
+
+write_prediction(prediction_gbm)
+```
+
+## Conclusion
+
+In this study, we used data from accelerometers to classify 
+and predict the quality of activities performed. Four machine
+learning models were perfomed on the training data, they
+are recursive partitioning decision tree model (rpart), 
+random forest model (rf), gradient boosted model (gbm), and
+Linear Discriminant Analysis model (lda). We found the 
+gbm model gave the best accuracy on the validation data
+set, we applied it to the testing data set. 
+
+Only the basic models were tested. Future work should include
+cross validation techniques such as k-fold cross validation and 
+leave one out cross validation, better pre-processing techniques
+such as the principal component analysis (PCA), and other 
+machine learning algorithms such as support vector machine 
+(SVM).
+
+
+
+
+## References
+ 
+
+[1] Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013. 
+
+
+[2] http://groupware.les.inf.puc-rio.br/har 
+
+
+
+
+
+## Appendix 1. Confusion Matrix Output
+
+```{r}
+confusionMatrix(myTesting$classe, pred_rpart)
+confusionMatrix(myTesting$classe, pred_rf)
+confusionMatrix(myTesting$classe, pred_gbm)
+confusionMatrix(myTesting$classe, pred_lda)
+```
+
